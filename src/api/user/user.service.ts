@@ -14,21 +14,27 @@ import { SessionService } from 'src/api/session/session.service';
 @Injectable()
 export class UserService {
   constructor(
-    @Inject('USER') private readonly userRepository: typeof User,
-    @Inject(databaseProviders[0].provide)
+    @Inject('USER') private readonly userRepository: typeof User, // Inject User repository to interact with the User model
+    @Inject(databaseProviders[0].provide) // Inject database provider for database interaction
     private readonly sequelize: Sequelize,
-    private readonly jwtAuthService: JwtAuthService,
-    private readonly sessionService: SessionService,
+    private readonly jwtAuthService: JwtAuthService, // Inject JWT authentication service
+    private readonly sessionService: SessionService, // Inject session management service
   ) {}
 
+  /**
+   * Adds a new user to the system
+   * @param data - UserAddDto containing the user details
+   * @returns PromiseResolve - Success or failure response
+   */
   async addUser(data: UserAddDto): Promise<PromiseResolve> {
     const transaction: Transaction = await this.sequelize.transaction();
     try {
+      // Check if the user already exists by email
       const userExist: User = await this.userRepository.findOne({
         where: { email: data.email },
       });
       if (userExist) {
-        await transaction.rollback();
+        await transaction.rollback(); // Rollback transaction if user exists
         return {
           error: false,
           status: RESPONSES.CONFLICT,
@@ -37,9 +43,10 @@ export class UserService {
         };
       }
 
+      // Create new user
       const createUser: User = await this.userRepository.create({ ...data }, { transaction });
       if (!createUser) throw new CustomError(RES_MSG.SMTH_WRNG, RESPONSES.BADREQUEST);
-      await transaction.commit();
+      await transaction.commit(); // Commit transaction after successful user creation
       return {
         error: false,
         status: RESPONSES.CREATED,
@@ -47,15 +54,21 @@ export class UserService {
         data: null,
       };
     } catch (error) {
-      await transaction.rollback();
+      await transaction.rollback(); // Rollback transaction in case of error
       Logger.error('error in addUser', error);
       throw new CustomError(RES_MSG.SMTH_WRNG, RESPONSES.BADREQUEST);
     }
   }
 
+  /**
+   * Creates an admin user (if no admin exists in the system)
+   * @param data - UserSignupDto containing the user signup details
+   * @returns PromiseResolve - Success or failure response
+   */
   async createUser(data: UserSignupDto): Promise<PromiseResolve> {
     const transaction: Transaction = await this.sequelize.transaction();
     try {
+      // Check if an admin already exists
       const userExist: User = await this.userRepository.findOne({
         where: { role: 'ADMIN' },
       });
@@ -69,9 +82,10 @@ export class UserService {
         };
       }
 
+      // Create the admin user
       const createUser: User = await this.userRepository.create({ ...data, role: 'ADMIN' }, { transaction });
       if (!createUser) throw new CustomError(RES_MSG.SMTH_WRNG, RESPONSES.BADREQUEST);
-      await transaction.commit();
+      await transaction.commit(); // Commit transaction after successful admin creation
       return {
         error: false,
         status: RESPONSES.CREATED,
@@ -79,16 +93,24 @@ export class UserService {
         data: null,
       };
     } catch (error) {
-      await transaction.rollback();
+      await transaction.rollback(); // Rollback transaction in case of error
       Logger.error('error in createUser', error);
       throw new CustomError(RES_MSG.SMTH_WRNG, RESPONSES.BADREQUEST);
     }
   }
 
+  /**
+   * Retrieves all users with optional role-based filtering
+   * @param limit - Pagination limit
+   * @param offset - Pagination offset
+   * @param role - Optional role filter (e.g. 'USER', 'ADMIN')
+   * @returns PromiseResolve - List of users with pagination details
+   */
   async getAllUsers(limit: number, offset: number, role?: string): Promise<PromiseResolve> {
     try {
       const whereCondition = role ? { role } : {}; // Apply role filter if provided
 
+      // Fetch users from the database with pagination
       const users: { rows: User[]; count: number } = await this.userRepository.findAndCountAll({
         where: whereCondition,
         limit: Number(limit),
@@ -96,6 +118,7 @@ export class UserService {
         raw: true,
         attributes: ['email', ['id', 'user_id'], 'created_at', 'role'],
       });
+
       return {
         error: false,
         status: RESPONSES.SUCCESS,
@@ -108,8 +131,14 @@ export class UserService {
     }
   }
 
+  /**
+   * Logs in a user by verifying credentials and generating an access token
+   * @param data - UserLoginpDto containing login credentials
+   * @returns PromiseResolve - Login success with access token or failure message
+   */
   async loginUser(data: UserLoginpDto): Promise<PromiseResolve> {
     try {
+      // Find user by email
       const loginUser: User = await this.userRepository.findOne({ where: { email: data.email } });
       if (!loginUser) {
         return {
@@ -119,6 +148,8 @@ export class UserService {
           data: null,
         };
       }
+
+      // Compare provided password with stored hash
       const comparePassword: boolean = await bcrypt.compare(data.password, loginUser.password);
       if (!comparePassword) {
         return {
@@ -128,9 +159,12 @@ export class UserService {
           data: null,
         };
       }
+
+      // Generate JWT token
       const accesToken: { token: string } = await this.jwtAuthService.createToken({ userId: loginUser.id, role: loginUser.role });
       const createSession: PromiseResolve = await this.sessionService.createSession(loginUser.id, accesToken.token);
       if (!createSession || createSession.error) throw new CustomError(RES_MSG.SMTH_WRNG, RESPONSES.BADREQUEST);
+
       return {
         error: false,
         status: RESPONSES.SUCCESS,
@@ -143,6 +177,12 @@ export class UserService {
     }
   }
 
+  /**
+   * Logs out a user by deleting their session
+   * @param userId - The user's ID
+   * @param token - The user's current session token
+   * @returns PromiseResolve - Logout success or failure message
+   */
   async logoutUser(userId: string, token: string): Promise<PromiseResolve> {
     try {
       const delSession: boolean = await this.sessionService.deleteSession(userId, token);
@@ -159,10 +199,19 @@ export class UserService {
     }
   }
 
+  /**
+   * Updates a user's password
+   * @param data - updatePasswordDto containing old and new passwords
+   * @param userId - The user's ID
+   * @returns PromiseResolve - Password update success or failure
+   */
   async updatePassword(data: updatePasswordDto, userId: string): Promise<PromiseResolve> {
     const transaction: Transaction = await this.sequelize.transaction();
     try {
+      // Fetch user details
       const user: User = await this.userRepository.findOne({ where: { id: userId }, raw: true, attributes: ['password'] });
+
+      // Compare old password with stored hash
       const comparePassword: boolean = await bcrypt.compare(data.old_password, user.password);
       if (!comparePassword) {
         await transaction.rollback();
@@ -173,6 +222,8 @@ export class UserService {
           data: null,
         };
       }
+
+      // Check if new password is the same as the old password
       if (data.old_password === data.new_password) {
         await transaction.rollback();
         return {
@@ -182,6 +233,8 @@ export class UserService {
           data: null,
         };
       }
+
+      // Update password
       const updatePassword: [affectedCount: number] = await this.userRepository.update({ password: data.new_password }, { where: { id: userId }, transaction, individualHooks: true });
       if (!updatePassword[0]) throw new CustomError(RES_MSG.SMTH_WRNG, RESPONSES.BADREQUEST);
       await transaction.commit();
@@ -198,6 +251,11 @@ export class UserService {
     }
   }
 
+  /**
+   * Deletes a user from the system
+   * @param user_id - The user's ID
+   * @returns PromiseResolve - Deletion success or failure
+   */
   async deleteUser(user_id: string): Promise<PromiseResolve> {
     const transaction: Transaction = await this.sequelize.transaction();
     try {
@@ -211,6 +269,7 @@ export class UserService {
           data: null,
         };
       }
+
       if (user.role === 'ADMIN') {
         await transaction.rollback();
         return {
@@ -220,6 +279,8 @@ export class UserService {
           data: null,
         };
       }
+
+      // Delete user
       const deleteUser: number = await this.userRepository.destroy({ where: { id: user_id }, transaction });
       if (!deleteUser) throw new CustomError(RES_MSG.SMTH_WRNG, RESPONSES.BADREQUEST);
       await transaction.commit();
